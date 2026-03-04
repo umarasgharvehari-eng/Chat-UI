@@ -8,8 +8,8 @@ import streamlit as st
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langchain_community.tools import DuckDuckGoSearchRun
-from langgraph.checkpoint.memory import MemorySaver
-from langchain.agents import create_agent
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 
 st.set_page_config(page_title="Gemini Agent", page_icon="🤖")
@@ -22,19 +22,6 @@ os.environ["GOOGLE_API_KEY"] = api_key
 
 MODEL = os.getenv("GEMINI_MODEL") or st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
 llm = ChatGoogleGenerativeAI(model=MODEL, temperature=0.3)
-
-try:
-    llm.invoke("ping")
-except Exception as e:
-    st.error(f"Gemini init failed: {type(e).__name__}")
-    st.code(repr(e))
-    st.stop()
-
-if "thread_id" not in st.session_state:
-    st.session_state.thread_id = str(uuid.uuid4())
-
-if "ui_messages" not in st.session_state:
-    st.session_state.ui_messages = []
 
 _ALLOWED_OPS = {
     ast.Add: op.add,
@@ -49,7 +36,6 @@ _ALLOWED_OPS = {
 
 def _safe_eval(expr: str) -> float:
     node = ast.parse(expr, mode="eval").body
-
     def _eval(n):
         if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
             return n.value
@@ -58,7 +44,6 @@ def _safe_eval(expr: str) -> float:
         if isinstance(n, ast.UnaryOp) and type(n.op) in _ALLOWED_OPS:
             return _ALLOWED_OPS[type(n.op)](_eval(n.operand))
         raise ValueError("Unsupported expression")
-
     return float(_eval(node))
 
 @tool
@@ -77,12 +62,7 @@ def _geocode(city: str):
     if not res:
         return None
     x = res[0]
-    return {
-        "name": x.get("name") or city,
-        "country": x.get("country"),
-        "lat": x["latitude"],
-        "lon": x["longitude"],
-    }
+    return {"name": x.get("name") or city, "country": x.get("country"), "lat": x["latitude"], "lon": x["longitude"]}
 
 @tool
 def weather(city: str) -> str:
@@ -104,10 +84,7 @@ def weather(city: str) -> str:
     r.raise_for_status()
     cur = r.json().get("current") or {}
     loc = f'{geo["name"]}, {geo["country"]}' if geo.get("country") else geo["name"]
-    t = cur.get("temperature_2m")
-    h = cur.get("relative_humidity_2m")
-    w = cur.get("wind_speed_10m")
-    return f"{loc}: {t}°C, humidity {h}%, wind {w} km/h"
+    return f"{loc}: {cur.get('temperature_2m')}°C, humidity {cur.get('relative_humidity_2m')}%, wind {cur.get('wind_speed_10m')} km/h"
 
 search = DuckDuckGoSearchRun()
 
@@ -120,43 +97,29 @@ SYSTEM_PROMPT = (
     "- If you used search, include 2-4 sources as bullet points."
 )
 
-def _normalize_content(content) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                if "text" in item and isinstance(item["text"], str):
-                    parts.append(item["text"])
-                elif item.get("type") == "text" and isinstance(item.get("text"), str):
-                    parts.append(item["text"])
-                else:
-                    parts.append(str(item))
-            else:
-                parts.append(str(item))
-        return "".join(parts).strip()
-    if isinstance(content, dict) and "text" in content and isinstance(content["text"], str):
-        return content["text"]
-    return str(content)
+prompt_tmpl = ChatPromptTemplate.from_messages(
+    [
+        ("system", SYSTEM_PROMPT),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+        MessagesPlaceholder("agent_scratchpad"),
+    ]
+)
 
 @st.cache_resource
 def build_agent():
-    checkpointer = MemorySaver()
-    return create_agent(
-        model=llm,
-        tools=[calculator, weather, search],
-        system_prompt=SYSTEM_PROMPT,
-        checkpointer=checkpointer,
-    )
+    a = create_tool_calling_agent(llm, [calculator, weather, search], prompt_tmpl)
+    return AgentExecutor(agent=a, tools=[calculator, weather, search], verbose=False)
 
 agent = build_agent()
 
 st.title("🤖 Gemini Agent (Tools + Memory + Search)")
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+if "ui_messages" not in st.session_state:
+    st.session_state.ui_messages = []
 
 for m in st.session_state.ui_messages:
     with st.chat_message(m["role"]):
@@ -169,15 +132,14 @@ if prompt:
         st.markdown(prompt)
 
     try:
-        out = agent.invoke(
-            {"messages": [("user", prompt)]},
-            config={"configurable": {"thread_id": st.session_state.thread_id}},
-        )
-        last = out["messages"][-1]
-        answer = _normalize_content(getattr(last, "content", last))
+        out = agent.invoke({"input": prompt, "chat_history": st.session_state.chat_history})
+        answer = out.get("output", "")
     except Exception as e:
         answer = f"⚠️ Error: {type(e).__name__}: {e}"
 
     st.session_state.ui_messages.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
         st.markdown(answer)
+
+    st.session_state.chat_history.append(("user", prompt))
+    st.session_state.chat_history.append(("assistant", answer))

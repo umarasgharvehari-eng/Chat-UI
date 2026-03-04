@@ -14,10 +14,11 @@ from langchain.agents import create_agent
 
 st.set_page_config(page_title="Gemini Agent", page_icon="🤖")
 
-api_key = os.getenv("GOOGLE_API_KEY")
+api_key = os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY", None)
 if not api_key:
-    st.error("Missing GOOGLE_API_KEY environment variable.")
+    st.error("Missing GOOGLE_API_KEY. Add it in Streamlit Cloud → App settings → Secrets.")
     st.stop()
+os.environ["GOOGLE_API_KEY"] = api_key
 
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = str(uuid.uuid4())
@@ -25,7 +26,7 @@ if "thread_id" not in st.session_state:
 if "ui_messages" not in st.session_state:
     st.session_state.ui_messages = []
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.getenv("GEMINI_MODEL") or st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
 llm = ChatGoogleGenerativeAI(model=MODEL, temperature=0.3)
 
 _ALLOWED_OPS = {
@@ -41,6 +42,7 @@ _ALLOWED_OPS = {
 
 def _safe_eval(expr: str) -> float:
     node = ast.parse(expr, mode="eval").body
+
     def _eval(n):
         if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
             return n.value
@@ -49,6 +51,7 @@ def _safe_eval(expr: str) -> float:
         if isinstance(n, ast.UnaryOp) and type(n.op) in _ALLOWED_OPS:
             return _ALLOWED_OPS[type(n.op)](_eval(n.operand))
         raise ValueError("Unsupported expression")
+
     return float(_eval(node))
 
 @tool
@@ -106,8 +109,33 @@ SYSTEM_PROMPT = (
     "- Use tools when helpful.\n"
     "- For up-to-date info, use duckduckgo search.\n"
     "- For weather, call the weather tool.\n"
-    "- Keep answers concise. If you used search, include 2-4 source links/titles in bullet points."
+    "- Keep answers concise.\n"
+    "- If you used search, include 2-4 sources as bullet points."
 )
+
+def _normalize_content(content) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                if "text" in item and isinstance(item["text"], str):
+                    parts.append(item["text"])
+                elif item.get("type") == "text" and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+                else:
+                    parts.append(str(item))
+            else:
+                parts.append(str(item))
+        return "".join(parts).strip()
+    if isinstance(content, dict) and "text" in content and isinstance(content["text"], str):
+        return content["text"]
+    return str(content)
 
 @st.cache_resource
 def build_agent():
@@ -137,8 +165,9 @@ if prompt:
         {"messages": [("user", prompt)]},
         config={"configurable": {"thread_id": st.session_state.thread_id}},
     )
+
     last = out["messages"][-1]
-    answer = getattr(last, "content", str(last))
+    answer = _normalize_content(getattr(last, "content", last))
 
     st.session_state.ui_messages.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):

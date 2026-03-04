@@ -1,0 +1,8 @@
+streamlit
+langchain
+langchain-google-genai
+langgraph
+langchain-community
+duckduckgo-search
+ddgs
+requests

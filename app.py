@@ -20,14 +20,21 @@ if not api_key:
     st.stop()
 os.environ["GOOGLE_API_KEY"] = api_key
 
+MODEL = os.getenv("GEMINI_MODEL") or st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
+llm = ChatGoogleGenerativeAI(model=MODEL, temperature=0.3)
+
+try:
+    llm.invoke("ping")
+except Exception as e:
+    st.error(f"Gemini init failed: {type(e).__name__}")
+    st.code(repr(e))
+    st.stop()
+
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = str(uuid.uuid4())
 
 if "ui_messages" not in st.session_state:
     st.session_state.ui_messages = []
-
-MODEL = os.getenv("GEMINI_MODEL") or st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
-llm = ChatGoogleGenerativeAI(model=MODEL, temperature=0.3)
 
 _ALLOWED_OPS = {
     ast.Add: op.add,
@@ -161,20 +168,16 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    out = agent.invoke(
-        {"messages": [("user", prompt)]},
-        config={"configurable": {"thread_id": st.session_state.thread_id}},
-    )
-
-    last = out["messages"][-1]
-    answer = _normalize_content(getattr(last, "content", last))
+    try:
+        out = agent.invoke(
+            {"messages": [("user", prompt)]},
+            config={"configurable": {"thread_id": st.session_state.thread_id}},
+        )
+        last = out["messages"][-1]
+        answer = _normalize_content(getattr(last, "content", last))
+    except Exception as e:
+        answer = f"⚠️ Error: {type(e).__name__}: {e}"
 
     st.session_state.ui_messages.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
         st.markdown(answer)
-try:
-    llm.invoke("ping")
-except Exception as e:
-    st.error(f"Gemini init failed: {type(e).__name__}")
-    st.code(repr(e))
-    st.stop()

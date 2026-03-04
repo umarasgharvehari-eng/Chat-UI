@@ -1,8 +1,9 @@
-streamlit
-langchain
-langchain-google-genai
-langgraph
-langchain-community
-duckduckgo-search
-ddgs
-requests
+streamlit==1.42.0
+requests==2.32.3
+langchain==0.3.19
+langchain-core==0.3.40
+langchain-community==0.3.18
+langchain-google-genai==2.0.11
+langgraph==0.2.74
+duckduckgo-search==7.2.1
+ddgs==9.0.0

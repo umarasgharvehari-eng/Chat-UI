@@ -172,3 +172,9 @@ if prompt:
     st.session_state.ui_messages.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
         st.markdown(answer)
+try:
+    llm.invoke("ping")
+except Exception as e:
+    st.error(f"Gemini init failed: {type(e).__name__}")
+    st.code(repr(e))
+    st.stop()
